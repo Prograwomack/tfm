@@ -32,3 +32,5 @@ ECHO est  activado.
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+*.lnk
