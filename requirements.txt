@@ -1,0 +1,39 @@
+# Core data stack
+pandas
+numpy
+scipy
+
+# Machine Learning
+scikit-learn
+xgboost
+joblib
+
+# Time series / stats
+statsmodels
+
+# Technical indicators
+ta
+
+# Binance API / env
+python-binance
+python-dotenv
+requests
+
+# Visualisation
+matplotlib
+seaborn
+plotly
+
+# Dashboard
+streamlit
+
+# Notebooks
+jupyterlab
+ipykernel
+
+# Progress / utilities
+tqdm
+
+# Optional RL block
+gymnasium
+stable-baselines3
