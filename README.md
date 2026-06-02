@@ -58,11 +58,11 @@ cryptobot-tfm/
 - Exploratory Data Analysis (EDA)
 - Baseline supervised machine learning models
 - Initial backtesting framework
+- Reinforcement learning experimentation
 
 ## In Progress
 
 - Strategy refinement and advanced feature engineering
-- Reinforcement learning experimentation
 - Trading execution pipeline
 - Monitoring dashboard
 
@@ -106,8 +106,25 @@ Serialized using `joblib`.
 
 ---
 
+
+---
+
+## Files
+
+- `src/execution/binance_spot_testnet.py`: minimal REST client for Binance Spot Testnet
+- `src/execution/paper_broker.py`: local long-only paper broker with fees and slippage
+- `src/execution/execution_logger.py`: JSONL logs for dashboard-ready traces
+- `scripts/run_paper_trading.py`: one-iteration smoke test
+- `notebooks/11_testnet_paper_trading.ipynb`: academic notebook for connection, order validation, paper execution and logs
+
+---
+
+---
+
 # Disclaimer
 
 This project is developed exclusively for academic and research purposes.
 
 It does not constitute financial advice or investment recommendation.
+
+---

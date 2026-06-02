@@ -37,3 +37,10 @@ tqdm
 # Optional RL block
 gymnasium
 stable-baselines3
+
+# Paper Trading Execution Layer
+requests>=2.31
+python-dotenv>=1.0
+pandas>=2.0
+matplotlib>=3.7
+ipykernel>=6.0
