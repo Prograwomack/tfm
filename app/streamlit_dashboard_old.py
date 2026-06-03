@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -56,7 +54,6 @@ DEFAULT_SUMMARY_PATH = PROJECT_ROOT / "results" / "11_testnet_paper_trading_summ
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
 SPOT_BASE_URL = "https://api.binance.com"
 TESTNET_BASE_URL = "https://testnet.binance.vision"
-LOCAL_TIMEZONE = ZoneInfo("Europe/Madrid")
 
 
 st.set_page_config(
@@ -86,18 +83,6 @@ def load_live_candles(base_url: str, symbol: str, interval: str, limit: int) -> 
     return candles_df, symbol_status
 
 
-@st.cache_data(ttl=5)
-def load_server_time(base_url: str) -> pd.Timestamp | None:
-    """Load Binance server time from the selected market data endpoint."""
-
-    client = BinanceMarketDataClient(MarketDataConfig(base_url=base_url))
-    payload = client._get("/api/v3/time")
-    server_time_ms = payload.get("serverTime")
-    if server_time_ms is None:
-        return None
-    return pd.to_datetime(server_time_ms, unit="ms", utc=True)
-
-
 @st.cache_resource(show_spinner=False)
 def load_cached_model(model_path: str):
     """Load a serialized model once per path."""
@@ -105,41 +90,10 @@ def load_cached_model(model_path: str):
     return load_model(model_path)
 
 
-def render_metric(label: str, value: str, delta: str | None = None, help_text: str | None = None) -> None:
+def render_metric(label: str, value: str, delta: str | None = None) -> None:
     """Render a metric with a small wrapper for consistent missing values."""
 
-    st.metric(label=label, value=value, delta=delta, help=help_text)
-
-
-def format_clock(value: datetime | pd.Timestamp | None, target_timezone: ZoneInfo | timezone = timezone.utc) -> str:
-    """Format a timestamp as a compact dashboard clock."""
-
-    if value is None or pd.isna(value):
-        return "N/A"
-    timestamp = pd.Timestamp(value)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize("UTC")
-    return timestamp.tz_convert(target_timezone).strftime("%H:%M:%S")
-
-
-def format_clock_with_zone(value: datetime | pd.Timestamp | None, target_timezone: ZoneInfo | timezone, zone_label: str) -> str:
-    """Format a timestamp with an explicit timezone suffix."""
-
-    clock = format_clock(value, target_timezone)
-    return f"{clock} {zone_label}" if clock != "N/A" else "N/A"
-
-
-def human_market_status(raw_status: object) -> str:
-    """Convert Binance symbol status into a presentation-friendly label."""
-
-    status = str(raw_status or "N/A").upper()
-    if status == "TRADING":
-        return "Mercado activo"
-    if status == "BREAK":
-        return "Pausado"
-    if status == "HALT":
-        return "Suspendido"
-    return status
+    st.metric(label=label, value=value, delta=delta)
 
 
 def build_candlestick_chart(candles_df: pd.DataFrame, features_df: pd.DataFrame, signal_payload: dict[str, object] | None) -> go.Figure:
@@ -374,13 +328,6 @@ def main() -> None:
         with st.expander("Detalle técnico del fallback"):
             st.write(symbol_status.get("source_warning", "No diagnostic detail available."))
 
-    try:
-        server_time = load_server_time(effective_base_url)
-    except Exception:
-        server_time = None
-
-    local_time = datetime.now(LOCAL_TIMEZONE)
-
     features_df = build_live_features(candles_df)
     latest_row = features_df.tail(1).copy()
 
@@ -423,35 +370,20 @@ def main() -> None:
         latest_price = float(candles_df["close"].iloc[-1])
         latest_time = candles_df["open_time"].iloc[-1]
 
-    clock_cols = st.columns([3, 1, 1])
-    with clock_cols[1]:
-        render_metric("Local time", format_clock_with_zone(local_time, LOCAL_TIMEZONE, "Madrid"))
-    with clock_cols[2]:
-        render_metric("Server time", format_clock_with_zone(server_time, timezone.utc, "UTC"))
-
-    status_help = (
-        "Estado de disponibilidad del par según Binance. Este dashboard ejecuta inferencia visual sobre datos live y lectura de logs locales; "
-        "no envía órdenes reales desde esta pantalla. La ejecución paper/testnet se mantiene separada para preservar trazabilidad."
-    )
-
     status_cols = st.columns(6)
     with status_cols[0]:
         render_metric("Símbolo", str(symbol_status.get("symbol", symbol)))
     with status_cols[1]:
-        render_metric("Estado mercado", human_market_status(symbol_status.get("status", "N/A")), help_text=status_help)
+        render_metric("Estado", str(symbol_status.get("status", "N/A")))
     with status_cols[2]:
         render_metric("Precio", format_number(latest_price, 6, f" {symbol[-4:]}"))
     with status_cols[3]:
-        render_metric("Última vela", format_clock_with_zone(latest_time, timezone.utc, "UTC"))
+        render_metric("Última vela", str(latest_time) if latest_time is not None else "N/A")
     with status_cols[4]:
         confidence = signal_payload.get("confidence")
         render_metric("Confianza", format_number(confidence, 4) if confidence is not None else "N/A")
     with status_cols[5]:
-        render_metric(
-            "Señal live",
-            str(signal_payload.get("signal", "HOLD")),
-            help_text="Señal calculada para visualización/inferencia. No implica ejecución automática de una orden real."
-        )
+        render_metric("Señal live", str(signal_payload.get("signal", "HOLD")))
 
     st.caption(
         f"Fuente solicitada: `{market_source}` | Fuente efectiva: `{effective_market_source}` | Base URL: `{effective_base_url}` | Modelo: `{selected_model_label}` | Razón señal: `{signal_payload.get('reason')}`"
