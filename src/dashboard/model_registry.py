@@ -1,4 +1,10 @@
-"""Model discovery and metadata helpers for the live dashboard."""
+"""Model discovery, loading and inference helpers for the live dashboard and paper trader.
+
+This module is deliberately tolerant with serialized model formats. Some notebooks save the
+estimator directly with joblib, while others save a dictionary containing the estimator,
+feature list, metrics and metadata. The live dashboard/paper trader needs the estimator object,
+but it also benefits from the embedded feature metadata when available.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +41,29 @@ NON_FEATURE_COLUMNS = {
     "ignore",
 } | TARGET_COLUMNS
 
+PREDICTOR_KEYS = [
+    "model",
+    "estimator",
+    "pipeline",
+    "clf",
+    "classifier",
+    "best_model",
+    "best_estimator",
+    "trained_model",
+    "xgb_model",
+    "random_forest_model",
+    "logistic_regression_model",
+]
+FEATURE_KEYS = [
+    "feature_names",
+    "features",
+    "feature_columns",
+    "selected_features",
+    "X_columns",
+    "x_columns",
+    "columns",
+]
+
 
 def discover_model_files(models_dir: str | Path) -> list[Path]:
     """Return available serialized model files ordered by name."""
@@ -61,18 +90,100 @@ def read_model_metadata(model_path: str | Path) -> dict[str, Any]:
     return {}
 
 
-def load_model(model_path: str | Path) -> Any:
-    """Load a serialized model with joblib."""
+def _extract_metadata_from_payload(payload: Any) -> dict[str, Any]:
+    """Extract lightweight metadata from a serialized payload when it is a dictionary."""
 
-    return joblib.load(model_path)
+    metadata: dict[str, Any] = {}
+
+    if not isinstance(payload, dict):
+        return metadata
+
+    metadata["serialized_payload_keys"] = list(payload.keys())
+
+    for key in FEATURE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            metadata["feature_names"] = [str(feature) for feature in value]
+            break
+
+    for key in ["target", "target_column", "horizon", "threshold", "model_name", "metrics", "classification_report"]:
+        if key in payload:
+            metadata[key] = payload[key]
+
+    nested_metadata = payload.get("metadata")
+    if isinstance(nested_metadata, dict):
+        metadata.update(nested_metadata)
+
+    return metadata
+
+
+def _find_predictor(payload: Any) -> Any | None:
+    """Find the first object with a predict method inside common joblib payload formats."""
+
+    if hasattr(payload, "predict"):
+        return payload
+
+    if isinstance(payload, dict):
+        for key in PREDICTOR_KEYS:
+            if key in payload:
+                candidate = _find_predictor(payload[key])
+                if candidate is not None:
+                    return candidate
+
+        for value in payload.values():
+            candidate = _find_predictor(value)
+            if candidate is not None:
+                return candidate
+
+    if isinstance(payload, (list, tuple)):
+        for value in payload:
+            candidate = _find_predictor(value)
+            if candidate is not None:
+                return candidate
+
+    return None
+
+
+def _attach_embedded_metadata(model: Any, metadata: dict[str, Any], model_path: str | Path) -> None:
+    """Attach embedded metadata to the loaded estimator when the object allows dynamic attrs."""
+
+    try:
+        setattr(model, "_cryptobot_embedded_metadata", metadata)
+        setattr(model, "_cryptobot_model_source_path", str(model_path))
+    except Exception:
+        pass
+
+
+def load_model(model_path: str | Path) -> Any:
+    """Load a serialized model with joblib and unwrap dictionary payloads when needed."""
+
+    payload = joblib.load(model_path)
+    model = _find_predictor(payload)
+
+    if model is None:
+        if isinstance(payload, dict):
+            payload_description = f"dict keys={list(payload.keys())}"
+        else:
+            payload_description = type(payload).__name__
+        raise TypeError(f"No object with a predict method was found in {model_path}. Loaded payload: {payload_description}")
+
+    embedded_metadata = _extract_metadata_from_payload(payload)
+    _attach_embedded_metadata(model, embedded_metadata, model_path)
+    return model
 
 
 def infer_feature_names(model: Any, metadata: dict[str, Any] | None = None) -> list[str]:
-    """Infer feature names from metadata or sklearn attributes when available."""
+    """Infer feature names from sidecar metadata, embedded payload metadata or model attributes."""
 
-    metadata = metadata or {}
-    for key in ["feature_names", "features", "feature_columns", "selected_features"]:
-        value = metadata.get(key)
+    merged_metadata: dict[str, Any] = {}
+    embedded_metadata = getattr(model, "_cryptobot_embedded_metadata", {})
+    if isinstance(embedded_metadata, dict):
+        merged_metadata.update(embedded_metadata)
+    if metadata:
+        merged_metadata.update(metadata)
+
+    for key in FEATURE_KEYS:
+        value = merged_metadata.get(key)
         if isinstance(value, list) and value:
             return [str(feature) for feature in value]
 
@@ -139,9 +250,9 @@ def predict_signal(model: Any, model_input: pd.DataFrame, buy_threshold: float =
         score = float(model.decision_function(model_input)[0])
         probability_up = 1 / (1 + pow(2.718281828, -score))
         prediction_raw = score
-    else:
+    elif hasattr(model, "predict"):
         prediction = model.predict(model_input)[0]
-        prediction_raw = float(prediction) if isinstance(prediction, (int, float)) else str(prediction)
+        prediction_raw = float(prediction) if isinstance(prediction, (int, float, bool)) else str(prediction)
         if str(prediction) in {"1", "BUY", "UP", "True", "true"}:
             probability_up = 1.0
         elif str(prediction) in {"0", "SELL", "DOWN", "False", "false"}:

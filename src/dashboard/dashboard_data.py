@@ -14,9 +14,41 @@ EXECUTION_EVENT_TYPES = {
     "paper_execution",
     "forced_paper_buy",
     "forced_paper_sell",
+    "paper_trade",
 }
-SIGNAL_EVENT_TYPE = "signal_generated"
+SIGNAL_EVENT_TYPES = {"signal_generated", "live_signal"}
 RUN_ID_FALLBACK = "NO_RUN_ID"
+
+EQUITY_COLUMNS = [
+    "time",
+    "logged_at",
+    "run_id",
+    "event_id",
+    "event_type",
+    "side",
+    "symbol",
+    "mark_price",
+    "cash_quote_after",
+    "position_base_after",
+    "equity_quote_after",
+]
+
+
+def _empty_equity_curve() -> pd.DataFrame:
+    """Return an empty equity dataframe with the expected schema."""
+
+    return pd.DataFrame(columns=EQUITY_COLUMNS)
+
+
+def _safe_last_numeric(df: pd.DataFrame, column: str) -> float | None:
+    """Return the last non-null numeric value for a column, or None when unavailable."""
+
+    if df.empty or column not in df.columns:
+        return None
+    values = pd.to_numeric(df[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return float(values.iloc[-1])
 
 
 def read_jsonl_logs(log_path: str | Path) -> pd.DataFrame:
@@ -69,21 +101,23 @@ def normalize_logs(logs_df: pd.DataFrame) -> pd.DataFrame:
         normalized_df["run_id"] = RUN_ID_FALLBACK
     normalized_df["run_id"] = normalized_df["run_id"].fillna(RUN_ID_FALLBACK).astype(str)
 
-    for column in ["logged_at", "timestamp"]:
+    for column in ["logged_at", "timestamp", "event_time", "candle_time"]:
         if column in normalized_df.columns:
             normalized_df[column] = pd.to_datetime(normalized_df[column], errors="coerce", utc=True)
 
-    if "logged_at" in normalized_df.columns and "timestamp" in normalized_df.columns:
-        normalized_df["event_time"] = normalized_df["timestamp"].fillna(normalized_df["logged_at"])
-    elif "timestamp" in normalized_df.columns:
-        normalized_df["event_time"] = normalized_df["timestamp"]
-    elif "logged_at" in normalized_df.columns:
-        normalized_df["event_time"] = normalized_df["logged_at"]
-    else:
+    if "event_time" not in normalized_df.columns:
         normalized_df["event_time"] = pd.NaT
+
+    if "timestamp" in normalized_df.columns:
+        normalized_df["event_time"] = normalized_df["event_time"].fillna(normalized_df["timestamp"])
+    if "candle_time" in normalized_df.columns:
+        normalized_df["event_time"] = normalized_df["event_time"].fillna(normalized_df["candle_time"])
+    if "logged_at" in normalized_df.columns:
+        normalized_df["event_time"] = normalized_df["event_time"].fillna(normalized_df["logged_at"])
 
     numeric_columns = [
         "close",
+        "price",
         "ema_10",
         "ema_20",
         "mark_price",
@@ -94,6 +128,7 @@ def normalize_logs(logs_df: pd.DataFrame) -> pd.DataFrame:
         "cash_quote_after",
         "position_base_after",
         "equity_quote_after",
+        "confidence",
         "event_sequence",
     ]
     for column in numeric_columns:
@@ -113,11 +148,15 @@ def get_available_run_ids(logs_df: pd.DataFrame) -> list[str]:
     if logs_df.empty or "run_id" not in logs_df.columns:
         return []
 
+    time_column = "event_time" if "event_time" in logs_df.columns else None
+    if time_column is None:
+        return logs_df["run_id"].dropna().astype(str).drop_duplicates().tolist()
+
     ordered_runs_df = (
-        logs_df.groupby("run_id", dropna=False)["event_time"]
+        logs_df.groupby("run_id", dropna=False)[time_column]
         .max()
         .reset_index()
-        .sort_values("event_time", ascending=False, na_position="last")
+        .sort_values(time_column, ascending=False, na_position="last")
     )
     return ordered_runs_df["run_id"].astype(str).tolist()
 
@@ -127,6 +166,8 @@ def filter_by_run(logs_df: pd.DataFrame, selected_run_id: str | None) -> pd.Data
 
     if logs_df.empty or selected_run_id in {None, "ALL_RUNS"}:
         return logs_df.copy()
+    if "run_id" not in logs_df.columns:
+        return pd.DataFrame()
     return logs_df[logs_df["run_id"].astype(str) == str(selected_run_id)].copy()
 
 
@@ -134,11 +175,11 @@ def build_equity_curve(logs_df: pd.DataFrame) -> pd.DataFrame:
     """Build an equity curve from paper execution events."""
 
     if logs_df.empty or "equity_quote_after" not in logs_df.columns:
-        return pd.DataFrame()
+        return _empty_equity_curve()
 
     equity_df = logs_df[logs_df["equity_quote_after"].notna()].copy()
     if equity_df.empty:
-        return pd.DataFrame()
+        return _empty_equity_curve()
 
     keep_columns = [
         "event_time",
@@ -156,7 +197,12 @@ def build_equity_curve(logs_df: pd.DataFrame) -> pd.DataFrame:
     keep_columns = [column for column in keep_columns if column in equity_df.columns]
     equity_df = equity_df[keep_columns].copy()
     equity_df = equity_df.rename(columns={"event_time": "time"})
-    return equity_df.sort_values("time", na_position="last").reset_index(drop=True)
+
+    for column in EQUITY_COLUMNS:
+        if column not in equity_df.columns:
+            equity_df[column] = pd.NA
+
+    return equity_df[EQUITY_COLUMNS].sort_values("time", na_position="last").reset_index(drop=True)
 
 
 def build_operations(logs_df: pd.DataFrame, include_holds: bool = True) -> pd.DataFrame:
@@ -191,11 +237,20 @@ def build_operations(logs_df: pd.DataFrame, include_holds: bool = True) -> pd.Da
         "cash_quote_after",
         "position_base_after",
         "equity_quote_after",
+        "signal",
+        "model_signal",
+        "executed_signal",
+        "confidence",
         "reason",
+        "policy_reason",
+        "model_reason",
+        "model_path",
         "run_id",
         "event_id",
     ]
     display_columns = [column for column in display_columns if column in operations_df.columns]
+    if not display_columns:
+        return pd.DataFrame()
     return operations_df[display_columns].sort_values("event_time", na_position="last").reset_index(drop=True)
 
 
@@ -205,19 +260,30 @@ def build_signals(logs_df: pd.DataFrame) -> pd.DataFrame:
     if logs_df.empty or "event_type" not in logs_df.columns:
         return pd.DataFrame()
 
-    signals_df = logs_df[logs_df["event_type"] == SIGNAL_EVENT_TYPE].copy()
+    signals_df = logs_df[logs_df["event_type"].isin(SIGNAL_EVENT_TYPES)].copy()
     display_columns = [
         "event_time",
+        "candle_time",
         "symbol",
         "signal",
+        "model_signal",
+        "executed_signal",
+        "confidence",
+        "prediction_raw",
+        "policy_reason",
+        "model_reason",
         "close",
+        "price",
         "ema_10",
         "ema_20",
         "reason",
+        "model_path",
         "run_id",
         "event_id",
     ]
     display_columns = [column for column in display_columns if column in signals_df.columns]
+    if not display_columns:
+        return pd.DataFrame()
     return signals_df[display_columns].sort_values("event_time", na_position="last").reset_index(drop=True)
 
 
@@ -251,36 +317,36 @@ def compute_dashboard_metrics(
     final_equity = None
 
     if not summary_df.empty:
-        if "initial_balance" in summary_df.columns:
-            initial_balance = pd.to_numeric(summary_df["initial_balance"], errors="coerce").dropna().iloc[-1]
-        if "final_equity" in summary_df.columns:
-            final_equity = pd.to_numeric(summary_df["final_equity"], errors="coerce").dropna().iloc[-1]
+        initial_balance = _safe_last_numeric(summary_df, "initial_balance")
+        final_equity = _safe_last_numeric(summary_df, "final_equity")
 
-    if final_equity is None and not equity_df.empty:
-        final_equity = equity_df["equity_quote_after"].dropna().iloc[-1]
+    if final_equity is None:
+        final_equity = _safe_last_numeric(equity_df, "equity_quote_after")
 
     if initial_balance is None:
-        if not summary_df.empty and "initial_balance" in summary_df.columns:
-            values = pd.to_numeric(summary_df["initial_balance"], errors="coerce").dropna()
-            initial_balance = values.iloc[-1] if not values.empty else None
-        elif not equity_df.empty:
-            initial_balance = equity_df["equity_quote_after"].dropna().iloc[0]
+        if not equity_df.empty and "equity_quote_after" in equity_df.columns:
+            values = pd.to_numeric(equity_df["equity_quote_after"], errors="coerce").dropna()
+            initial_balance = float(values.iloc[0]) if not values.empty else None
+        elif not logs_df.empty:
+            initial_balance = _safe_last_numeric(logs_df, "initial_balance")
 
     return_pct = None
     if initial_balance not in [None, 0] and final_equity is not None:
         return_pct = (float(final_equity) / float(initial_balance) - 1) * 100
 
-    latest_equity_row = equity_df.dropna(subset=["equity_quote_after"]).tail(1)
     latest_cash = latest_position = latest_price = None
-    if not latest_equity_row.empty:
-        row = latest_equity_row.iloc[0]
-        latest_cash = row.get("cash_quote_after")
-        latest_position = row.get("position_base_after")
-        latest_price = row.get("mark_price")
+    if not equity_df.empty and "equity_quote_after" in equity_df.columns:
+        latest_equity_row = equity_df.dropna(subset=["equity_quote_after"]).tail(1)
+        if not latest_equity_row.empty:
+            row = latest_equity_row.iloc[0]
+            latest_cash = row.get("cash_quote_after")
+            latest_position = row.get("position_base_after")
+            latest_price = row.get("mark_price")
 
     last_signal = None
     if not signals_df.empty and "signal" in signals_df.columns:
-        last_signal = signals_df["signal"].dropna().iloc[-1]
+        signal_values = signals_df["signal"].dropna()
+        last_signal = signal_values.iloc[-1] if not signal_values.empty else None
 
     total_fees = 0.0
     if not trades_df.empty and "fee_quote" in trades_df.columns:
