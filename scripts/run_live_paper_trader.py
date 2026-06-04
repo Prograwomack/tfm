@@ -115,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         default=60,
         help="Minimum seconds between console waiting messages when no new candle is available. Default: 60",
     )
+    parser.add_argument(
+        "--max-backfill-candles",
+        type=int,
+        default=100,
+        help="Maximum number of missed closed candles to process sequentially after downtime. Default: 100",
+    )
     return parser.parse_args()
 
 
@@ -389,10 +395,54 @@ def maybe_print_waiting(runtime_state: dict[str, object], args: argparse.Namespa
     )
 
 
-def run_once(
+def select_candles_to_process(
+    signal_candles_df: pd.DataFrame,
+    *,
+    process_open_candle: bool,
+    runtime_state: dict[str, object],
+    max_backfill_candles: int,
+) -> tuple[pd.DataFrame, int]:
+    """Select candles that still need inference, preserving closed-candle order.
+
+    Fresh runs intentionally process only the latest available closed candle instead of replaying
+    hundreds of historical candles. Resumed or long-running runs process every closed candle newer
+    than the last processed one, capped by max_backfill_candles to avoid runaway catch-up after very
+    long downtime.
+    """
+
+    if signal_candles_df.empty:
+        return signal_candles_df.copy(), 0
+
+    if process_open_candle:
+        return signal_candles_df.tail(1).copy(), 0
+
+    last_processed_candle_time = runtime_state.get("last_processed_candle_time")
+    if not last_processed_candle_time:
+        return signal_candles_df.tail(1).copy(), 0
+
+    last_processed_ts = pd.Timestamp(last_processed_candle_time)
+    if last_processed_ts.tzinfo is None:
+        last_processed_ts = last_processed_ts.tz_localize("UTC")
+
+    candidates_df = signal_candles_df[signal_candles_df["open_time"] > last_processed_ts].copy()
+    if candidates_df.empty:
+        return candidates_df, 0
+
+    max_backfill_candles = int(max_backfill_candles)
+    if max_backfill_candles <= 0:
+        skipped = max(0, len(candidates_df) - 1)
+        return candidates_df.tail(1).copy(), skipped
+
+    if len(candidates_df) > max_backfill_candles:
+        skipped = len(candidates_df) - max_backfill_candles
+        return candidates_df.tail(max_backfill_candles).copy(), skipped
+
+    return candidates_df, 0
+
+
+def process_single_candle(
     *,
     args: argparse.Namespace,
-    client: BinanceMarketDataClient,
     broker: PaperBroker,
     logger: JsonlExecutionLogger,
     run_id: str,
@@ -400,30 +450,27 @@ def run_once(
     model,
     model_path: Path | None,
     state_path: Path,
-    policy_config_path: Path,
+    policy_config: dict[str, object],
     runtime_state: dict[str, object],
+    signal_candles_df: pd.DataFrame,
+    target_candle: pd.Series,
+    candle_status: str,
+    backfill_position: int,
+    backfill_total: int,
 ) -> int:
-    policy_config = load_policy_config(policy_config_path, args)
+    """Run model inference and paper execution for exactly one candle.
 
-    raw_klines = client.klines(symbol=args.symbol, interval=args.interval, limit=args.candle_limit)
-    candles_df = klines_to_dataframe(raw_klines)
-    signal_candles_df, candle_status = get_signal_candles(candles_df, process_open_candle=bool(args.process_open_candle))
+    For backfilled candles, live features are calculated only with candles up to the target candle.
+    This avoids accidentally using later candles as future information while catching up after sleep,
+    network drops or temporary DNS failures.
+    """
 
-    if signal_candles_df.empty:
-        maybe_print_waiting(runtime_state, args, latest_candle_time=None)
-        return sequence
+    price = float(target_candle["close"])
+    candle_time = pd.Timestamp(target_candle["open_time"]).isoformat()
+    candle_close_time = pd.Timestamp(target_candle["close_time"]).isoformat()
 
-    latest_candle = signal_candles_df.iloc[-1]
-    price = float(latest_candle["close"])
-    candle_time = pd.Timestamp(latest_candle["open_time"]).isoformat()
-    candle_close_time = pd.Timestamp(latest_candle["close_time"]).isoformat()
-
-    last_processed_candle_time = runtime_state.get("last_processed_candle_time")
-    if not args.process_open_candle and last_processed_candle_time == candle_time:
-        maybe_print_waiting(runtime_state, args, latest_candle_time=candle_time)
-        return sequence
-
-    features_df = build_live_features(signal_candles_df)
+    history_until_target = signal_candles_df[signal_candles_df["open_time"] <= pd.Timestamp(target_candle["open_time"])].copy()
+    features_df = build_live_features(history_until_target)
 
     if model is None:
         raw_signal_payload = heuristic_signal(features_df)
@@ -460,6 +507,8 @@ def run_once(
             "candle_time": candle_time,
             "candle_close_time": candle_close_time,
             "candle_status": candle_status,
+            "backfill_position": backfill_position,
+            "backfill_total": backfill_total,
             "signal": execution_decision["executed_signal"],
             "model_signal": raw_signal_payload.get("signal"),
             "executed_signal": execution_decision["executed_signal"],
@@ -504,6 +553,8 @@ def run_once(
             "candle_time": candle_time,
             "candle_close_time": candle_close_time,
             "candle_status": candle_status,
+            "backfill_position": backfill_position,
+            "backfill_total": backfill_total,
             "signal": execution_decision["executed_signal"],
             "model_signal": raw_signal_payload.get("signal"),
             "executed_signal": execution_decision["executed_signal"],
@@ -537,9 +588,13 @@ def run_once(
     runtime_state["last_processed_candle_time"] = candle_time
     runtime_state["last_processed_candle_close_time"] = candle_close_time
 
+    backfill_label = ""
+    if backfill_total > 1:
+        backfill_label = f" backfill={backfill_position}/{backfill_total}"
+
     print(
         f"[{utc_now_iso()}] {args.symbol.upper()} {args.interval} "
-        f"closed_candle={candle_time} price={price:.8f} model={raw_signal_payload.get('signal')} exec={execution_decision['executed_signal']} "
+        f"closed_candle={candle_time}{backfill_label} price={price:.8f} model={raw_signal_payload.get('signal')} exec={execution_decision['executed_signal']} "
         f"equity={float(trade.get('equity_quote_after', 0)):.4f} "
         f"cash={float(trade.get('cash_quote_after', 0)):.4f} "
         f"pos={float(trade.get('position_base_after', 0)):.8f} "
@@ -547,6 +602,85 @@ def run_once(
     )
     return sequence
 
+
+def run_once(
+    *,
+    args: argparse.Namespace,
+    client: BinanceMarketDataClient,
+    broker: PaperBroker,
+    logger: JsonlExecutionLogger,
+    run_id: str,
+    sequence: int,
+    model,
+    model_path: Path | None,
+    state_path: Path,
+    policy_config_path: Path,
+    runtime_state: dict[str, object],
+) -> int:
+    policy_config = load_policy_config(policy_config_path, args)
+
+    raw_klines = client.klines(symbol=args.symbol, interval=args.interval, limit=args.candle_limit)
+    candles_df = klines_to_dataframe(raw_klines)
+    signal_candles_df, candle_status = get_signal_candles(candles_df, process_open_candle=bool(args.process_open_candle))
+
+    if signal_candles_df.empty:
+        maybe_print_waiting(runtime_state, args, latest_candle_time=None)
+        return sequence
+
+    candles_to_process_df, skipped_backfill = select_candles_to_process(
+        signal_candles_df,
+        process_open_candle=bool(args.process_open_candle),
+        runtime_state=runtime_state,
+        max_backfill_candles=int(args.max_backfill_candles),
+    )
+
+    if candles_to_process_df.empty:
+        latest_candle_time = pd.Timestamp(signal_candles_df.iloc[-1]["open_time"]).isoformat()
+        maybe_print_waiting(runtime_state, args, latest_candle_time=latest_candle_time)
+        return sequence
+
+    if skipped_backfill > 0:
+        sequence += 1
+        log_event(
+            logger,
+            "live_backfill_truncated",
+            run_id,
+            sequence,
+            {
+                "symbol": args.symbol.upper(),
+                "interval": args.interval,
+                "source": args.source,
+                "skipped_backfill_candles": skipped_backfill,
+                "max_backfill_candles": int(args.max_backfill_candles),
+                "mode": "paper_live",
+            },
+        )
+        print(
+            f"[{utc_now_iso()}] WARNING: skipped {skipped_backfill} older missed candles "
+            f"because max_backfill_candles={int(args.max_backfill_candles)}"
+        )
+
+    backfill_total = len(candles_to_process_df)
+    for backfill_position, (_, target_candle) in enumerate(candles_to_process_df.iterrows(), start=1):
+        sequence = process_single_candle(
+            args=args,
+            broker=broker,
+            logger=logger,
+            run_id=run_id,
+            sequence=sequence,
+            model=model,
+            model_path=model_path,
+            state_path=state_path,
+            policy_config=policy_config,
+            runtime_state=runtime_state,
+            signal_candles_df=signal_candles_df,
+            target_candle=target_candle,
+            candle_status=candle_status,
+            backfill_position=backfill_position,
+            backfill_total=backfill_total,
+        )
+
+    return sequence
 
 def main() -> None:
     load_dotenv(PROJECT_ROOT / ".env")
@@ -576,6 +710,11 @@ def main() -> None:
     run_id = f"live-paper-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
     sequence = 0
     runtime_state: dict[str, object] = {}
+    if checkpoint and args.resume_state and not args.reset_state:
+        if checkpoint.get("last_processed_candle_time"):
+            runtime_state["last_processed_candle_time"] = checkpoint.get("last_processed_candle_time")
+        if checkpoint.get("last_processed_candle_close_time"):
+            runtime_state["last_processed_candle_close_time"] = checkpoint.get("last_processed_candle_close_time")
 
     base_url = TESTNET_BASE_URL if args.source == "testnet" else SPOT_BASE_URL
     client = BinanceMarketDataClient(MarketDataConfig(base_url=base_url, timeout_seconds=15))
@@ -606,6 +745,7 @@ def main() -> None:
             "process_open_candle": bool(args.process_open_candle),
             "inference_frequency": "every_poll" if args.process_open_candle else "new_closed_candle_only",
             "heartbeat_seconds": int(args.heartbeat_seconds),
+            "max_backfill_candles": int(args.max_backfill_candles),
             "state_restored": bool(checkpoint and args.resume_state and not args.reset_state),
             "fresh_state": not bool(checkpoint and args.resume_state and not args.reset_state),
         },
