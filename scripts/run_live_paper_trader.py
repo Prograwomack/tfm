@@ -219,14 +219,38 @@ def build_broker(args: argparse.Namespace, checkpoint: dict[str, object]) -> Pap
 
 
 def log_event(logger: JsonlExecutionLogger, event_type: str, run_id: str, sequence: int, payload: dict[str, object]) -> dict[str, object]:
+    """Write one structured event separating market time from processing time.
+
+    ``event_time`` is the logical time used by the dashboard charts. For signal/trade
+    events this should be the candle time, so backfilled candles are plotted where they
+    belong in the market timeline. ``processed_at`` keeps the real wall-clock time at
+    which the daemon wrote the event.
+    """
+
+    payload_clean = dict(payload)
+    processed_at = str(payload_clean.pop("processed_at", utc_now_iso()))
+    event_time = payload_clean.pop("event_time", None)
+
+    if event_time is None:
+        event_time = payload_clean.get("candle_time") or payload_clean.get("timestamp") or processed_at
+
+    if payload_clean.get("candle_time") is not None and str(event_time) == str(payload_clean.get("candle_time")):
+        event_time_source = "candle_time"
+    elif payload_clean.get("timestamp") is not None and str(event_time) == str(payload_clean.get("timestamp")):
+        event_time_source = "timestamp"
+    else:
+        event_time_source = "processed_at"
+
     return logger.log_event(
         event_type,
         {
             "event_id": str(uuid4()),
             "run_id": run_id,
             "event_sequence": sequence,
-            "event_time": utc_now_iso(),
-            **payload,
+            "event_time": event_time,
+            "processed_at": processed_at,
+            "event_time_source": event_time_source,
+            **payload_clean,
         },
     )
 

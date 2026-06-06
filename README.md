@@ -11,7 +11,7 @@ El sistema integra distintas fases del pipeline de ciencia de datos y machine le
 - Análisis exploratorio de datos (EDA)
 - Entrenamiento y evaluación de modelos supervisados
 - Backtesting de estrategias
-- Aprendizaje por refuerzo
+- Aprendizaje por refuerzo para la toma de decisiones
 - Ejecución automatizada
 - Dashboard de monitorización
 
@@ -47,26 +47,21 @@ cryptobot-tfm/
 └── .env
 ```
 
-# Current Development Status
+# Features
 
-## Completed
-
-- Historical DOGEUSDT market data acquisition from Binance
-- Feature engineering pipeline
+- Historical cryptocurrency market data acquisition from Binance
+- Automated feature engineering pipeline with technical indicators
+- Support and resistance feature generation
 - Exploratory Data Analysis (EDA)
-- Baseline supervised machine learning models
-- Multi-version backtesting framework
-- Reinforcement learning experimentation
+- Supervised machine learning baseline models
+- Multi-version strategy backtesting framework
+- Reinforcement learning trading agents
 - Binance Spot Testnet integration
-- Local paper trading execution pipeline
-- Initial monitoring dashboard
-
-## In Progress
-
-- Strategy refinement and advanced feature engineering
-- RL experimentation and policy optimization
-- Dashboard improvements and live monitoring
-- Cross-version strategy comparison framework
+- Paper trading execution engine
+- Real-time market monitoring dashboard
+- Live feature generation and model inference
+- Trade execution logging and portfolio tracking
+- Modular architecture for experimentation and deployment
 
 # Datasets
 
@@ -110,6 +105,7 @@ Serialized using `joblib`.
 | `README.md` | Main project documentation |
 | `requirements.txt` | Python dependency list |
 | `launch_dashboard.bat` | Windows launcher for the Streamlit dashboard |
+| `launch_live_paper_trader.bat` | Windows launcher for the live paper trading service |
 
 ## Application Layer
 
@@ -117,7 +113,7 @@ Serialized using `joblib`.
 |---|---|
 | `app/streamlit_dashboard.py` | Interactive dashboard for paper trading monitoring and portfolio visualization |
 
-## Core Notebooks
+## Research Notebooks
 
 | Notebook | Description |
 |---|---|
@@ -139,12 +135,16 @@ Serialized using `joblib`.
 |---|---|
 | `scripts/create_sample_dashboard_logs.py` | Generates synthetic dashboard execution logs |
 | `scripts/run_paper_trading.py` | Runs the paper trading execution pipeline |
+| `scripts/run_live_paper_trader.py` | Live paper trading loop using real-time market data and model inference |
 
 ## Dashboard Modules
 
 | File | Description |
 |---|---|
 | `src/dashboard/dashboard_data.py` | Dashboard data loading and portfolio metric utilities |
+| `src/dashboard/live_market.py` | Real-time market data acquisition and candle processing |
+| `src/dashboard/live_features.py` | Online feature engineering for live model inference |
+| `src/dashboard/model_registry.py` | Centralized loading and management of trained ML models |
 
 ## Execution Modules
 

@@ -22,6 +22,7 @@ RUN_ID_FALLBACK = "NO_RUN_ID"
 EQUITY_COLUMNS = [
     "time",
     "logged_at",
+    "processed_at",
     "run_id",
     "event_id",
     "event_type",
@@ -101,7 +102,7 @@ def normalize_logs(logs_df: pd.DataFrame) -> pd.DataFrame:
         normalized_df["run_id"] = RUN_ID_FALLBACK
     normalized_df["run_id"] = normalized_df["run_id"].fillna(RUN_ID_FALLBACK).astype(str)
 
-    for column in ["logged_at", "timestamp", "event_time", "candle_time"]:
+    for column in ["logged_at", "processed_at", "timestamp", "event_time", "candle_time", "candle_close_time"]:
         if column in normalized_df.columns:
             normalized_df[column] = pd.to_datetime(normalized_df[column], errors="coerce", utc=True)
 
@@ -184,6 +185,7 @@ def build_equity_curve(logs_df: pd.DataFrame) -> pd.DataFrame:
     keep_columns = [
         "event_time",
         "logged_at",
+        "processed_at",
         "run_id",
         "event_id",
         "event_type",
@@ -226,6 +228,11 @@ def build_operations(logs_df: pd.DataFrame, include_holds: bool = True) -> pd.Da
 
     display_columns = [
         "event_time",
+        "processed_at",
+        "logged_at",
+        "candle_time",
+        "candle_close_time",
+        "event_time_source",
         "event_type",
         "side",
         "symbol",
@@ -263,7 +270,11 @@ def build_signals(logs_df: pd.DataFrame) -> pd.DataFrame:
     signals_df = logs_df[logs_df["event_type"].isin(SIGNAL_EVENT_TYPES)].copy()
     display_columns = [
         "event_time",
+        "processed_at",
+        "logged_at",
         "candle_time",
+        "candle_close_time",
+        "event_time_source",
         "symbol",
         "signal",
         "model_signal",
