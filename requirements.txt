@@ -1,49 +1,52 @@
+# ============================================================
+# Cryptobot TFM - Python dependencies
+# ============================================================
+# Recommended Python version: 3.11
+#
+# Notes:
+# - Standard-library modules such as os, sys, json, pathlib,
+#   datetime, decimal, uuid, warnings and collections are not listed here.
+# - Credentials must be stored in a local .env file and must never be
+#   committed to the repository.
+# - For a fully locked environment, generate a separate lock file with:
+#     pip freeze > requirements-lock.txt
+
 # Core data stack
-pandas
-numpy
-scipy
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
 
-# Machine Learning
-scikit-learn
-xgboost
-joblib
+# Machine learning
+scikit-learn>=1.3
+xgboost>=2.0
+joblib>=1.3
 
-# Time series / stats
-statsmodels
+# Time series / statistics
+statsmodels>=0.14
 
 # Technical indicators
-ta
+ta>=0.11
 
-# Binance API / env
-python-binance
-python-dotenv
-requests
+# Binance API / environment variables / HTTP
+python-binance>=1.0
+python-dotenv>=1.0
+requests>=2.31
 
 # Visualisation
-matplotlib
-seaborn
-plotly
+matplotlib>=3.7
+seaborn>=0.13
+plotly>=5.18
 
 # Dashboard
-streamlit
+streamlit>=1.30
 
-# Notebooks
-jupyterlab
-ipykernel
+# Notebooks / interactive execution
+jupyterlab>=4.0
+ipykernel>=6.0
+ipython>=8.0
 
 # Progress / utilities
-tqdm
+tqdm>=4.66
 
-# Optional RL block
-gymnasium
-stable-baselines3
-
-# Paper Trading Execution Layer
-requests>=2.31
-python-dotenv>=1.0
-pandas>=2.0
-matplotlib>=3.7
-ipykernel>=6.0
-
-#Dashboard
-streamlit>=1.30
+# Reinforcement learning environment
+gymnasium>=0.29
